@@ -1,0 +1,7 @@
+node_modules/
+runtime/
+data/
+.env
+fonts/NotoSansJP-Regular.ttf
+fonts/NotoSansKR-Regular.ttf
+fonts/NotoSansSC-Regular.ttf
