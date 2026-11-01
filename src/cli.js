@@ -10,7 +10,7 @@ const { db } = S;
 const tg = require('./telegram');
 const chain = require('./chain');
 const prices = require('./prices');
-const { normAddress, toXdc, randomCode, validTimeZone, localDate } = require('./util');
+const { normAddress, toXdc, randomCode, validTimeZone, localDate, money } = require('./util');
 const PLUGIN_RPC_LINK = 'https://xdcoutpost.xyz/go/plugin-rpc/?from=shopbot-install';
 
 const c = { b: s => `\x1b[1m${s}\x1b[0m`, g: s => `\x1b[32m${s}\x1b[0m`, y: s => `\x1b[33m${s}\x1b[0m`, r: s => `\x1b[31m${s}\x1b[0m`, d: s => `\x1b[2m${s}\x1b[0m`, cy: s => `\x1b[36m${s}\x1b[0m` };
@@ -45,18 +45,46 @@ async function askAddress(def) {
     say(c.r('  That isn’t an XDC address. It should be xdc or 0x followed by 40 characters.'));
   }
 }
-async function askRateMode(sym, cur, addr) {
-  const market = addr ? await prices.marketPriceForContract(addr) : null;
+async function chooseRate(sym, cur, addr, market) {
   say(`  How should your ${cur} prices be converted into ${sym}?`);
-  const opts = [['one', `1 ${sym} = 1 ${cur}`], ['USD', 'Pegged to USD (a US-dollar stablecoin)'], ['AUD', 'Pegged to AUD'], ...(market ? [['market', `Market price (about US$${Number(market).toPrecision(4)})`]] : []), ['fixed', 'A fixed rate I choose']];
+  const opts = [
+    ...(market ? [['market', `Market price, live from CoinGecko (about US$${Number(market).toPrecision(4)})`]] : []),
+    ['cgid', 'Market price, live from CoinGecko (I’ll enter its CoinGecko ID)'],
+    ['USD', 'Pegged to USD (a US-dollar stablecoin)'], ['AUD', 'Pegged to AUD (an Australian-dollar stablecoin)'],
+    ['fixed', 'A fixed rate I choose'], ['one', `1 ${sym} = 1 ${cur}`]];
   opts.forEach((o, i) => say(`    ${i + 1}) ${o[1]}`));
   for (;;) {
-    const n = Number(await ask('  Choose', 1));
-    const o = opts[n - 1]; if (!o) continue;
+    const o = opts[Number(await ask('  Choose a number')) - 1]; if (!o) continue;
     if (o[0] === 'fixed') { for (;;) { const v = (await ask(`  How many ${sym} equal 1.00 ${cur}?`)).replace(/,/g, ''); if (/^\d+(\.\d+)?$/.test(v) && Number(v) > 0) return { rate_mode: 'fixed', fixed_rate: v }; } }
+    if (o[0] === 'cgid') {
+      for (;;) {
+        const id = prices.parseCoingeckoId(await ask('  CoinGecko ID (the end of its page address, e.g. coingecko.com/en/coins/plugin → plugin)'));
+        if (!id) continue;
+        const usd = await prices.priceForCoingeckoId(id);
+        if (usd) { say(c.g(`  ✓ CoinGecko price: about US$${Number(usd).toPrecision(4)}`)); return { rate_mode: 'market', coingecko_id: id }; }
+        say(c.r(`  CoinGecko didn’t return a price for “${id}”.`));
+        if (!(await yes('  Try another ID?'))) break;
+      }
+      continue;
+    }
     if (o[0] === 'one') return { rate_mode: 'fixed', fixed_rate: '1' };
     if (o[0] === 'market') return { rate_mode: 'market' };
     return { rate_mode: 'peg', peg_currency: o[0] };
+  }
+}
+// Picks a rate, then shows what a A$20 product would cost so a wrong choice is obvious.
+async function askRateMode(sym, cur, addr, decimals) {
+  const market = addr ? await prices.marketPriceForContract(addr) : null;
+  for (;;) {
+    const rate = await chooseRate(sym, cur, addr, market);
+    const ex = await prices.example({ symbol: sym, address: addr, decimals, ...rate }, cur);
+    if (ex.ok) {
+      say(`  With this setting, a product priced ${money('20', cur)} would cost about ${c.b(Number(ex.amount).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' ' + sym)}.`);
+      if (await yes('  Does that look right?')) return rate;
+    } else {
+      say(c.y(`  Couldn’t work out a price with that setting right now (${ex.error}).`));
+      if (await yes('  Keep it anyway?', false)) return rate;
+    }
   }
 }
 
@@ -100,9 +128,9 @@ async function setup() {
     const info = await chain.readToken(a).catch(() => null);
     if (!info) { say(c.r('  Couldn’t read a token at that address on XDC mainnet.')); continue; }
     say(c.g(`  ✓ Found ${info.name} (${info.symbol}), ${info.decimals} decimals`));
-    const rate = await askRateMode(info.symbol, cur, a);
-    if (existing) db.prepare('UPDATE tokens SET symbol=?, name=?, decimals=?, enabled=1, removed=0, rate_mode=?, peg_currency=?, fixed_rate=? WHERE id=?').run(info.symbol, info.name, info.decimals, rate.rate_mode, rate.peg_currency || null, rate.fixed_rate || null, existing.id);
-    else db.prepare('INSERT INTO tokens(symbol, name, address, decimals, enabled, builtin, rate_mode, peg_currency, fixed_rate, sort) VALUES (?,?,?,?,1,0,?,?,?,?)').run(info.symbol, info.name, a, info.decimals, rate.rate_mode, rate.peg_currency || null, rate.fixed_rate || null, 10 + db.prepare('SELECT COUNT(*) n FROM tokens').get().n);
+    const rate = await askRateMode(info.symbol, cur, a, info.decimals);
+    if (existing) db.prepare('UPDATE tokens SET symbol=?, name=?, decimals=?, enabled=1, removed=0, rate_mode=?, peg_currency=?, fixed_rate=?, coingecko_id=? WHERE id=?').run(info.symbol, info.name, info.decimals, rate.rate_mode, rate.peg_currency || null, rate.fixed_rate || null, rate.coingecko_id || null, existing.id);
+    else db.prepare('INSERT INTO tokens(symbol, name, address, decimals, enabled, builtin, rate_mode, peg_currency, fixed_rate, coingecko_id, sort) VALUES (?,?,?,?,1,0,?,?,?,?,?)').run(info.symbol, info.name, a, info.decimals, rate.rate_mode, rate.peg_currency || null, rate.fixed_rate || null, rate.coingecko_id || null, 10 + db.prepare('SELECT COUNT(*) n FROM tokens').get().n);
     say(c.g(`  ✓ ${info.symbol} will be accepted`));
   }
   if (!db.prepare('SELECT 1 FROM tokens WHERE enabled = 1').get()) { say(c.y('  No tokens selected, so turning on XDC.')); db.prepare('UPDATE tokens SET enabled = 1 WHERE address IS NULL AND builtin = 1').run(); }

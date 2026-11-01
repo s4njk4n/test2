@@ -512,13 +512,13 @@ function rateText(t) {
   const cur = S.get('price_currency');
   if (t.rate_mode === 'fixed') return `fixed: 1 ${cur} = ${t.fixed_rate} ${t.symbol}`;
   if (t.rate_mode === 'peg') return `pegged to ${t.peg_currency}`;
-  return 'market price';
+  return t.coingecko_id ? `market price (CoinGecko: ${t.coingecko_id})` : 'market price';
 }
 async function tokensMenu(chatId) {
   const list = db.prepare('SELECT * FROM tokens WHERE removed = 0 ORDER BY sort, id').all();
   const lines = list.map(t => `${t.enabled ? '✅' : '⬜'} <b>${escapeHtml(t.symbol)}</b>${t.address ? ` · <code>${toXdc(t.address)}</code>` : ' · native coin'} · ${escapeHtml(rateText(t))}`);
   return tg.send(chatId, `<b>Tokens accepted</b>\nTap a token to turn it on or off. Customers choose from the ones that are on.\n\n${lines.join('\n')}`, { keyboard: kb([
-    ...list.map(t => [btn(`${t.enabled ? '✅' : '⬜'} ${t.symbol}`, 'at:' + t.id), t.builtin ? null : btn('Remove', 'atd:' + t.id)]),
+    ...list.map(t => [btn(`${t.enabled ? '✅' : '⬜'} ${t.symbol}`, 'at:' + t.id), t.builtin ? null : btn('Change rate', 'atx:' + t.id), t.builtin ? null : btn('Remove', 'atd:' + t.id)]),
     [btn('➕ Add a custom token', 'ata')],
     back('as', '◀ Settings'),
   ]) });
@@ -558,31 +558,61 @@ async function tokenAddInput(user, chatId, text) {
     id = Number(db.prepare("INSERT INTO tokens(symbol, name, address, decimals, enabled, builtin, rate_mode, sort) VALUES (?,?,?,?,0,0,'fixed',?)").run(info.symbol, info.name, addr, info.decimals, max + 1).lastInsertRowid);
   }
   session.clear(user.id);
-  const market = await prices.marketPriceForContract(addr);
+  return rateMenu(chatId, id, `Found <b>${escapeHtml(info.name)} (${escapeHtml(info.symbol)})</b>, ${info.decimals} decimals.`);
+}
+// How the shop's prices convert into a custom token. Shown when adding it, and from “Change rate”.
+async function rateMenu(chatId, id, intro = '') {
+  const t = O.tokenById(id); if (!t) return;
   const cur = S.get('price_currency');
-  return tg.send(chatId, `Found <b>${escapeHtml(info.name)} (${escapeHtml(info.symbol)})</b>, ${info.decimals} decimals.\n\nHow should your ${escapeHtml(cur)} prices be converted into ${escapeHtml(info.symbol)}?${market ? `\nMarket price available: about US$${Number(market).toPrecision(4)}.` : ''}`, { keyboard: kb([
-    [btn(`1 ${info.symbol} = 1 ${cur}`, `atr:${id}:one`)],
+  const market = t.address ? await prices.marketPriceForContract(t.address) : null;
+  return tg.send(chatId, `${intro ? intro + '\n\n' : ''}How should your ${escapeHtml(cur)} prices be converted into <b>${escapeHtml(t.symbol)}</b>?\n\n` +
+    `• <b>Market price</b>: live from CoinGecko. Best for tokens that trade on exchanges.\n• <b>Pegged</b>: for stablecoins worth exactly 1 USD or 1 AUD.\n• <b>Fixed rate</b>: you set how many ${escapeHtml(t.symbol)} equal 1 ${escapeHtml(cur)}.` +
+    (market ? `\n\nCoinGecko knows this token: about US$${Number(market).toPrecision(4)}.` : ''), { keyboard: kb([
+    market ? [btn('📈 Market price (found on CoinGecko)', `atr:${id}:market`)] : null,
+    [btn('📈 Market price — enter CoinGecko ID', `atr:${id}:cgid`)],
     [btn('Pegged to USD', `atr:${id}:USD`), btn('Pegged to AUD', `atr:${id}:AUD`)],
-    market ? [btn('Use the market price', `atr:${id}:market`)] : null,
-    [btn('Set a fixed rate…', `atr:${id}:fixed`)],
+    [btn('Fixed rate…', `atr:${id}:fixed`), btn(`1 ${t.symbol} = 1 ${cur}`, `atr:${id}:one`)],
+    [btn('Cancel', 'at')],
   ]) });
+}
+// After a rate is set: show what a typical price becomes, so a wrong rate is obvious.
+async function confirmRate(chatId, id) {
+  const t = O.tokenById(id); const cur = S.get('price_currency');
+  const ex = await prices.example(t, cur);
+  const line = ex.ok ? `A product priced ${escapeHtml(money('20', cur))} will cost about <b>${Number(ex.amount).toLocaleString('en-US', { maximumFractionDigits: 4 })} ${escapeHtml(t.symbol)}</b>.` : `⚠️ Couldn’t work out a price with this setting right now: ${escapeHtml(ex.error)}`;
+  return tg.send(chatId, `✅ ${escapeHtml(t.symbol)} is accepted (${escapeHtml(rateText(t))}).\n\n${line}\n\nDoes that look right?`, { keyboard: kb([[btn('Looks right', 'at'), btn('Change rate', 'atx:' + id)]]) });
+}
+async function tokenCgPrompt(user, chatId, id) {
+  session.set(user.id, 'atcg', { id });
+  return tg.send(chatId, 'Send the token’s <b>CoinGecko ID</b>, or paste its CoinGecko page link.\n\nThe ID is the last part of the page address. For example, coingecko.com/en/coins/<b>plugin</b> has the ID <code>plugin</code>.', { keyboard: kb([[btn('Cancel', 'atx:' + id)]]) });
+}
+async function tokenCgInput(user, chatId, data, text) {
+  const cg = prices.parseCoingeckoId(text);
+  if (!cg) return tg.send(chatId, 'That doesn’t look like a CoinGecko ID. Try something like <code>plugin</code>.');
+  await tg.send(chatId, 'Checking CoinGecko…');
+  const usd = await prices.priceForCoingeckoId(cg);
+  if (!usd) return tg.send(chatId, `CoinGecko didn’t return a price for <code>${escapeHtml(cg)}</code>. Check the ID on the token’s CoinGecko page and try again.`, { keyboard: kb([[btn('Cancel', 'atx:' + data.id)]]) });
+  db.prepare("UPDATE tokens SET rate_mode = 'market', coingecko_id = ?, peg_currency = NULL, enabled = 1 WHERE id = ?").run(cg, data.id);
+  session.clear(user.id);
+  return confirmRate(chatId, data.id);
 }
 async function tokenRate(user, chatId, id, mode) {
   const t = O.tokenById(id); if (!t) return;
   const cur = S.get('price_currency');
-  if (mode === 'fixed') { session.set(user.id, 'atfix', { id }); return tg.send(chatId, `How many ${escapeHtml(t.symbol)} equal 1.00 ${escapeHtml(cur)}? For example 250 or 0.5`, { keyboard: kb([[btn('Cancel', 'at')]]) }); }
+  if (mode === 'fixed') { session.set(user.id, 'atfix', { id }); return tg.send(chatId, `How many ${escapeHtml(t.symbol)} equal 1.00 ${escapeHtml(cur)}? For example 250 or 0.5`, { keyboard: kb([[btn('Cancel', 'atx:' + id)]]) }); }
+  if (mode === 'cgid') return tokenCgPrompt(user, chatId, id);
   if (mode === 'one') db.prepare("UPDATE tokens SET rate_mode = 'fixed', fixed_rate = '1', peg_currency = NULL, enabled = 1 WHERE id = ?").run(id);
-  else if (mode === 'market') db.prepare("UPDATE tokens SET rate_mode = 'market', peg_currency = NULL, enabled = 1 WHERE id = ?").run(id);
+  else if (mode === 'market') db.prepare("UPDATE tokens SET rate_mode = 'market', coingecko_id = NULL, peg_currency = NULL, enabled = 1 WHERE id = ?").run(id);
   else if (FIATS.includes(mode)) db.prepare("UPDATE tokens SET rate_mode = 'peg', peg_currency = ?, enabled = 1 WHERE id = ?").run(mode, id);
-  await tg.send(chatId, `${escapeHtml(t.symbol)} is now accepted.`);
-  return tokensMenu(chatId);
+  else return;
+  return confirmRate(chatId, id);
 }
 async function tokenFixedInput(user, chatId, data, text) {
   const v = text.trim().replace(/,/g, '');
   if (!/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0) return tg.send(chatId, 'Send a number greater than 0, like 250 or 0.5.');
   db.prepare("UPDATE tokens SET rate_mode = 'fixed', fixed_rate = ?, peg_currency = NULL, enabled = 1 WHERE id = ?").run(v, data.id);
   session.clear(user.id);
-  return tokensMenu(chatId);
+  return confirmRate(chatId, data.id);
 }
 
 // ---------- admins ----------
@@ -654,6 +684,7 @@ async function onCallback(user, chatId, data, cb) {
     case 'ata': return tokenAddPrompt(user, chatId);
     case 'atr': return tokenRate(user, chatId, Number(a), b);
     case 'atd': return tokenRemove(chatId, Number(a));
+    case 'atx': session.clear(user.id); return rateMenu(chatId, Number(a));
     case 'aad': return adminsMenu(user, chatId);
     case 'aadi': return adminInvite(user, chatId);
     case 'aadr': return adminRemove(user, chatId, Number(a));
@@ -673,9 +704,10 @@ async function onInput(user, chatId, state, data, msg) {
     case 'af': return fieldInput(user, chatId, data, text);
     case 'ata': return tokenAddInput(user, chatId, text);
     case 'atfix': return tokenFixedInput(user, chatId, data, text);
+    case 'atcg': return tokenCgInput(user, chatId, data, text);
   }
   return false;
 }
-const ADMIN_STATES = new Set(['ape', 'apa', 'apka', 'aof', 'aorf', 'aomp', 'af', 'ata', 'atfix']);
+const ADMIN_STATES = new Set(['ape', 'apa', 'apka', 'aof', 'aorf', 'aomp', 'af', 'ata', 'atfix', 'atcg']);
 
 module.exports = { menu, onCallback, onInput, isAdmin, isOwner, ADMIN_STATES, PLUGIN_RPC_LINK, VERSION };

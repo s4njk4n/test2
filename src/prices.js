@@ -97,4 +97,21 @@ async function marketPriceForContract(address) {
   try { const v = await fetchUsdValues([{ rate_mode: 'market', address }]); return v['ca:' + address] || null; } catch { return null; }
 }
 
-module.exports = { quote, needsFeed, marketPriceForContract, FIATS, fetchUsdValues, _reset: () => { cache = { at: 0, key: '', data: null }; } };
+// Live USD price for a CoinGecko coin ID (e.g. "plugin"), or null if CoinGecko doesn't know it.
+async function priceForCoingeckoId(id) {
+  try { const v = await fetchUsdValues([{ rate_mode: 'market', coingecko_id: id }]); return v['cg:' + id] || null; } catch { return null; }
+}
+// Accepts "plugin" or a full CoinGecko page URL and returns the coin ID.
+function parseCoingeckoId(text) {
+  const t = String(text || '').trim();
+  const m = /coingecko\.com\/(?:[a-z-]+\/)?coins\/([a-z0-9-]+)/i.exec(t);
+  const id = (m ? m[1] : t).toLowerCase();
+  return /^[a-z0-9-]{2,80}$/.test(id) ? id : null;
+}
+// "A$20.00 → ≈ 6,612.5 PLI" style example used to confirm a token's rate looks right.
+async function example(token, priceCurrency, price = '20') {
+  try { const q = await quote(price, priceCurrency, token); return { ok: true, amount: q.amount }; }
+  catch (e) { return { ok: false, error: e.message }; }
+}
+
+module.exports = { quote, priceForCoingeckoId, parseCoingeckoId, example, needsFeed, marketPriceForContract, FIATS, fetchUsdValues, _reset: () => { cache = { at: 0, key: '', data: null }; } };

@@ -105,7 +105,7 @@ async function onMessage(msg) {
 }
 
 const ADMIN_CMDS = new Set(['am', 'apl', 'ap', 'apa', 'ape', 'apt', 'apd', 'apdy', 'apk', 'apka', 'apkd', 'apkx', 'apkxy', 'apko', 'aol', 'ao', 'aof', 'aun', 'aunx', 'up', 'acl',
-  'aor', 'aorc', 'aome', 'aorf', 'aomp', 'cl', 'ar', 'ax', 'aw', 'awp', 'awb', 'ah', 'ab', 'as', 'af', 'afe', 'afc', 'afg', 'at', 'ata', 'atr', 'atd', 'aad', 'aadi', 'aadr']);
+  'aor', 'aorc', 'aome', 'aorf', 'aomp', 'cl', 'ar', 'ax', 'aw', 'awp', 'awb', 'ah', 'ab', 'as', 'af', 'afe', 'afc', 'afg', 'at', 'ata', 'atr', 'atd', 'atx', 'aad', 'aadi', 'aadr']);
 
 async function onCallback(cb) {
   const u = cb.from; const msg = cb.message; const chatId = msg?.chat?.id ?? u.id;
