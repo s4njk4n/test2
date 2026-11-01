@@ -22,7 +22,7 @@ async function call(method, params = {}, { timeoutMs = 40000, tries = 3 } = {}) 
       throw new TgError(body.description || 'Telegram error', body.error_code, body.parameters);
     } catch (e) {
       if (e instanceof TgError) throw e;
-      if (attempt >= tries) throw new TgError('Network error talking to Telegram: ' + (e.message || e), 0);
+      if (attempt >= tries) { const c = e.cause; throw new TgError(`Can’t reach Telegram from this server (${c?.code || c?.message || e.name || e.message})`, 0); }
       await new Promise(r => setTimeout(r, 1000 * attempt));
     } finally { clearTimeout(timer); }
   }

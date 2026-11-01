@@ -27,8 +27,15 @@ async function askToken() {
     const t = await ask('Telegram bot token (from @BotFather)');
     if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(t)) { say(c.r('  That doesn’t look like a bot token. It looks like 123456789:AAE…')); continue; }
     tg.setToken(t);
-    try { const me = await tg.getMe(); say(c.g(`  ✓ Connected to @${me.username}`)); return { token: t, username: me.username }; }
-    catch (e) { say(c.r(`  Telegram didn’t accept that token (${e.message}). Copy it again from @BotFather.`)); }
+    for (;;) {
+      try { const me = await tg.getMe(); say(c.g(`  ✓ Connected to @${me.username}`)); return { token: t, username: me.username }; }
+      catch (e) {
+        if (e.code === 401 || e.code === 404) { say(c.r('  Telegram says that token isn’t valid. Copy it again from @BotFather (or /revoke there for a new one).')); break; }
+        say(c.r(`  ${e.message}.`));
+        say('  The token may be fine: this server can’t connect to api.telegram.org. Check with:  curl -4 -sS https://api.telegram.org/ -o /dev/null -w "%{http_code}\n"');
+        if (!(await yes('  Try again with the same token?'))) break;
+      }
+    }
   }
 }
 async function askAddress(def) {

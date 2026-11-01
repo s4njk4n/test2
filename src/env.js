@@ -1,6 +1,10 @@
 'use strict';
 // Loads KEY=value pairs from the .env file next to the app (created by setup, readable only by its owner).
 const fs = require('node:fs');
+// Network defaults for VPSs: try IPv4 first (many advertise IPv6 that doesn't route), and give each
+// connection attempt 5 s instead of Node's 250 ms, which is too short for e.g. Australia → Telegram (Amsterdam).
+require('node:dns').setDefaultResultOrder(process.env.SHOPBOT_DNS_ORDER || 'ipv4first');
+try { require('node:net').setDefaultAutoSelectFamilyAttemptTimeout(Number(process.env.SHOPBOT_CONNECT_ATTEMPT_MS) || 5000); } catch {}
 const path = require('node:path');
 const ENV_PATH = process.env.SHOPBOT_ENV || path.join(__dirname, '..', '.env');
 
